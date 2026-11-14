@@ -239,8 +239,9 @@ export async function streamMockVariant(
     { section: 'TAGS', text: mockVariant.hashtags.join(' ') },
   ];
 
+  const delay = process.env.VERCEL ? 0 : 15;
   for (const item of sections) {
-    // Stream in natural 1-2 word clusters with ~20ms delay
+    // Stream in natural 1-2 word clusters
     const words = item.text.split(' ');
     for (let i = 0; i < words.length; i += 2) {
       const chunkText = words.slice(i, i + 2).join(' ') + (i + 2 < words.length ? ' ' : '');
@@ -249,7 +250,9 @@ export async function streamMockVariant(
         section: item.section,
         text: chunkText,
       });
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (delay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
     }
   }
 

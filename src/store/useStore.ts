@@ -353,6 +353,7 @@ export const useStore = create<AppState>((set, get) => ({
 
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
+      let currentEvent = 'message';
 
       while (true) {
         const { value, done } = await reader.read();
@@ -362,11 +363,13 @@ export const useStore = create<AppState>((set, get) => ({
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
-        let currentEvent = 'message';
-
         for (const line of lines) {
           const trimmed = line.trim();
-          if (!trimmed) continue;
+          if (!trimmed) {
+            // Empty line marks end of an SSE message block
+            currentEvent = 'message';
+            continue;
+          }
 
           if (trimmed.startsWith('event:')) {
             currentEvent = trimmed.replace('event:', '').trim();
@@ -375,7 +378,8 @@ export const useStore = create<AppState>((set, get) => ({
             try {
               const data = JSON.parse(jsonStr);
 
-              if (currentEvent === 'chunk') {
+              // Match by currentEvent or by payload signature for resilience
+              if (currentEvent === 'chunk' || (data.section && data.text !== undefined)) {
                 const { variantIndex, section, text } = data;
                 set((state) => {
                   const updated = [...state.variants];
@@ -387,7 +391,6 @@ export const useStore = create<AppState>((set, get) => ({
                   else if (section === 'BODY') newTarget.body += text;
                   else if (section === 'CTA') newTarget.cta += text;
                   else if (section === 'TAGS') {
-                    // Extract words starting with # or words split by space
                     const combined = (newTarget.hashtags.join(' ') + ' ' + text).trim();
                     newTarget.hashtags = combined
                       .split(/[\s,]+/)
@@ -398,7 +401,7 @@ export const useStore = create<AppState>((set, get) => ({
                   updated[variantIndex] = newTarget;
                   return { variants: updated };
                 });
-              } else if (currentEvent === 'done') {
+              } else if (currentEvent === 'done' || Array.isArray(data.variants)) {
                 const finalVariants: PostVariant[] = data.variants || get().variants;
                 const record: GenerationRecord = {
                   id: data.generationId || `gen-${Date.now()}`,
@@ -417,9 +420,9 @@ export const useStore = create<AppState>((set, get) => ({
                   isGenerating: false,
                   abortController: null,
                 });
-              } else if (currentEvent === 'error') {
+              } else if (currentEvent === 'error' || (data.error && !data.section)) {
                 set({
-                  error: data.message || 'Ошибка потоковой генерации',
+                  error: data.message || data.error || 'Ошибка потоковой генерации',
                   isGenerating: false,
                   abortController: null,
                 });
@@ -429,6 +432,25 @@ export const useStore = create<AppState>((set, get) => ({
             }
           }
         }
+      }
+
+      // If stream finished and we are still in isGenerating, finalize safely
+      if (get().isGenerating) {
+        const currentVariants = get().variants;
+        const record: GenerationRecord = {
+          id: `gen-${Date.now()}`,
+          createdAt: Date.now(),
+          topic: topic.trim(),
+          platform,
+          variants: currentVariants,
+        };
+        const updatedHistory = [record, ...get().history];
+        saveHistory(updatedHistory);
+        set({
+          isGenerating: false,
+          abortController: null,
+          history: updatedHistory,
+        });
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {
